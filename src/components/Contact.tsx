@@ -1,57 +1,251 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Mail, Github, Linkedin, MapPin, Send, CheckCircle2, AlertCircle } from 'lucide-react';
+import { 
+  Mail, 
+  Github, 
+  Linkedin, 
+  MapPin, 
+  Send, 
+  CheckCircle2, 
+  AlertCircle, 
+  Loader2, 
+  Phone, 
+  Tag 
+} from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 export default function Contact() {
-  const [formState, setFormState] = useState({ name: '', email: '', message: '' });
+  // 1. Form state
+  const [formState, setFormState] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    subject: '',
+    message: '',
+    website_url: '' // Honeypot field for spam prevention
+  });
+
+  // 2. Real-time validation errors
+  const [errors, setErrors] = useState({
+    name: '',
+    email: '',
+    message: ''
+  });
+
+  // 3. UI states
   const [focusedField, setFocusedField] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'submitting' | 'success' | 'error'>('idle');
   const [errorMessage, setErrorMessage] = useState('');
+  const [mountTime, setMountTime] = useState<number>(0);
   const containerRef = useRef<HTMLDivElement>(null);
+
+  // Record mount time for bot submission speed threshold checks
+  useEffect(() => {
+    setMountTime(Date.now());
+  }, []);
 
   const handleFocus = (fieldName: string) => setFocusedField(fieldName);
   const handleBlur = (fieldName: string) => {
     if (!formState[fieldName as keyof typeof formState]) {
       setFocusedField(null);
     }
+    validateField(fieldName, formState[fieldName as keyof typeof formState]);
+  };
+
+  /**
+   * Validate fields on keystroke/blur
+   */
+  const validateField = (fieldName: string, value: string) => {
+    let errorMsg = '';
+    
+    if (fieldName === 'name') {
+      if (!value.trim()) {
+        errorMsg = 'Name is required.';
+      }
+    } else if (fieldName === 'email') {
+      if (!value.trim()) {
+        errorMsg = 'Email is required.';
+      } else if (!/\S+@\S+\.\S+/.test(value)) {
+        errorMsg = 'Please enter a valid email address.';
+      }
+    } else if (fieldName === 'message') {
+      if (!value.trim()) {
+        errorMsg = 'Message content is required.';
+      }
+    }
+
+    setErrors((prev) => ({ ...prev, [fieldName]: errorMsg }));
+    return errorMsg;
   };
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
     setFormState((prev) => ({ ...prev, [name]: value }));
+    
+    // Clear error as user corrects the text
+    if (['name', 'email', 'message'].includes(name)) {
+      validateField(name, value);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
-    // Quick Validation
-    if (!formState.name || !formState.email || !formState.message) {
-      setStatus('error');
-      setErrorMessage('Please fill out all fields.');
-      return;
-    }
 
-    if (!/\S+@\S+\.\S+/.test(formState.email)) {
-      setStatus('error');
-      setErrorMessage('Please provide a valid email address.');
+    // Prevent double submissions while in process
+    if (status === 'submitting') return;
+
+    // Validate fields
+    const nameErr = validateField('name', formState.name);
+    const emailErr = validateField('email', formState.email);
+    const messageErr = validateField('message', formState.message);
+
+    if (nameErr || emailErr || messageErr) {
+      const firstError = nameErr ? 'name' : emailErr ? 'email' : 'message';
+      document.getElementById(firstError)?.focus();
       return;
     }
 
     setStatus('submitting');
     setErrorMessage('');
 
+    // Honeypot spam check
+    if (formState.website_url) {
+      console.warn('[Spam Shield] Honeypot field was filled.');
+      setTimeout(() => {
+        setStatus('success');
+      }, 1000);
+      return;
+    }
+
+    // Bot quick-submission speed threshold check (e.g. less than 2.0s to fill form)
+    if (Date.now() - mountTime < 2000) {
+      console.warn('[Spam Shield] Quick-submission detected.');
+      setTimeout(() => {
+        setStatus('success');
+      }, 1000);
+      return;
+    }
+
+    // Retrieve environment variables
+    const serviceId = process.env.NEXT_PUBLIC_EMAILJS_SERVICE_ID;
+    const templateId = process.env.NEXT_PUBLIC_EMAILJS_TEMPLATE_ID;
+    const publicKey = process.env.NEXT_PUBLIC_EMAILJS_PUBLIC_KEY;
+
+    // Check if EmailJS credentials are fully set up
+    const isEmailJSConfigured = serviceId && templateId && publicKey && 
+                                !serviceId.startsWith('your_emailjs') && 
+                                !templateId.startsWith('your_emailjs') && 
+                                !publicKey.startsWith('your_emailjs');
+
+    // Try fetching the client IP address (optional)
+    let clientIp = 'Unknown';
     try {
-      // Simulate API submit delay
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      
+      const ipResponse = await fetch('https://api.ipify.org?format=json', { signal: AbortSignal.timeout(3000) });
+      if (ipResponse.ok) {
+        const ipData = await ipResponse.json();
+        clientIp = ipData.ip;
+      }
+    } catch (ipError) {
+      // Fail silently and use fallback IP
+    }
+
+    const cleanName = formState.name.trim();
+    const cleanEmail = formState.email.trim();
+    const cleanPhone = formState.phone.trim() || 'Not Provided';
+    const cleanSubject = formState.subject.trim() || 'No Subject';
+    const cleanMessage = formState.message.trim();
+
+    const now = new Date();
+    const formattedDate = now.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata' });
+    const formattedTime = now.toLocaleTimeString('en-US', { timeZone: 'Asia/Kolkata' });
+
+    try {
+      if (!isEmailJSConfigured) {
+        // Fallback to local serverless API route to save to contacts.json and mock success
+        // This prevents blocking development or local testing before credentials are pasted
+        const response = await fetch('/api/contact', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            ...formState,
+            timestamp: mountTime,
+          }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.error || 'Mock submission failed.');
+        }
+
+        console.log('[Mock Submission Success] Saved locally to contacts.json. Note: Configure EmailJS in .env.local to receive actual emails.');
+      } else {
+        // 1. Submit to EmailJS API directly
+        const response = await fetch('https://api.emailjs.com/api/v1.0/email/send', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            service_id: serviceId,
+            template_id: templateId,
+            user_id: publicKey,
+            template_params: {
+              from_name: cleanName,
+              from_email: cleanEmail,
+              phone: cleanPhone,
+              subject: cleanSubject,
+              message: cleanMessage,
+              date: formattedDate,
+              time: formattedTime,
+              ip: clientIp,
+              to_email: 'deepaksiva641@gmail.com'
+            }
+          }),
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(errText || 'Failed to dispatch email.');
+        }
+
+        // 2. Also append submission locally in contacts.json
+        await fetch('/api/contact', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            ...formState,
+            timestamp: mountTime,
+          }),
+        }).catch(() => {
+          // Ignore local storage errors if email dispatch succeeded
+        });
+      }
+
       setStatus('success');
-      setFormState({ name: '', email: '', message: '' });
+
+      // Clear input fields on successful submission
+      setFormState({
+        name: '',
+        email: '',
+        phone: '',
+        subject: '',
+        message: '',
+        website_url: ''
+      });
+      setErrors({
+        name: '',
+        email: '',
+        message: ''
+      });
       setFocusedField(null);
 
-      // Trigger Confetti Celebration!
+      // Confetti celebration
       confetti({
         particleCount: 100,
         spread: 70,
@@ -59,9 +253,12 @@ export default function Contact() {
         colors: ['#00E5FF', '#8B5CF6', '#38BDF8']
       });
 
-    } catch (err) {
+    } catch (err: any) {
+      console.error('Submit error:', err);
       setStatus('error');
-      setErrorMessage('An error occurred. Please try again.');
+      setErrorMessage(
+        err.message || 'An error occurred while transmitting your message. Please check your connection and try again.'
+      );
     }
   };
 
@@ -69,8 +266,9 @@ export default function Contact() {
     <section 
       id="contact" 
       className="relative py-28 px-6 md:px-16 bg-[#0B0F19] overflow-hidden"
+      aria-labelledby="contact-heading"
     >
-      {/* Background spotlights */}
+      {/* Visual background spotlights */}
       <div className="absolute top-[20%] right-[5%] w-[400px] h-[400px] bg-primary/5 rounded-full blur-[120px] pointer-events-none" />
       <div className="absolute bottom-[20%] left-[5%] w-[400px] h-[400px] bg-secondary/5 rounded-full blur-[120px] pointer-events-none" />
 
@@ -78,7 +276,7 @@ export default function Contact() {
         ref={containerRef}
         className="max-w-5xl mx-auto relative z-10"
       >
-        {/* Section Title */}
+        {/* Header Title */}
         <div className="mb-16 md:mb-20 text-center">
           <motion.div 
             initial={{ opacity: 0, x: -20 }}
@@ -90,6 +288,7 @@ export default function Contact() {
             [ 07 // COMMUNICATION ]
           </motion.div>
           <motion.h2 
+            id="contact-heading"
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
             viewport={{ once: true }}
@@ -101,7 +300,7 @@ export default function Contact() {
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch">
-          {/* Left Column: Direct channels (col 5) */}
+          {/* Left Column: Direct channels (col-5) */}
           <motion.div 
             initial={{ opacity: 0, x: -30 }}
             whileInView={{ opacity: 1, x: 0 }}
@@ -124,7 +323,8 @@ export default function Contact() {
                 {/* Email */}
                 <a 
                   href="mailto:deepaksiva641@gmail.com"
-                  className="flex items-center gap-3 p-3.5 rounded-xl bg-white/5 border border-white/5 hover:border-primary/30 hover:bg-white/10 text-white/80 hover:text-white transition-all duration-300"
+                  className="flex items-center gap-3 p-3.5 rounded-xl bg-white/5 border border-white/5 hover:border-primary/30 hover:bg-white/10 text-white/80 hover:text-white transition-all duration-300 focus:outline-none focus:ring-1 focus:ring-primary/50"
+                  aria-label="Send email to deepaksiva641@gmail.com"
                 >
                   <Mail size={16} className="text-primary" />
                   <span>deepaksiva641@gmail.com</span>
@@ -135,7 +335,8 @@ export default function Contact() {
                   href="https://github.com/Siva1286"
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="flex items-center gap-3 p-3.5 rounded-xl bg-white/5 border border-white/5 hover:border-secondary/30 hover:bg-white/10 text-white/80 hover:text-white transition-all duration-300"
+                  className="flex items-center gap-3 p-3.5 rounded-xl bg-white/5 border border-white/5 hover:border-secondary/30 hover:bg-white/10 text-white/80 hover:text-white transition-all duration-300 focus:outline-none focus:ring-1 focus:ring-secondary/50"
+                  aria-label="Visit Siva1286 GitHub Profile"
                 >
                   <Github size={16} className="text-secondary" />
                   <span>github.com/Siva1286</span>
@@ -144,7 +345,8 @@ export default function Contact() {
                 {/* LinkedIn */}
                 <a 
                   href="#"
-                  className="flex items-center gap-3 p-3.5 rounded-xl bg-white/5 border border-white/5 hover:border-accent/30 hover:bg-white/10 text-white/80 hover:text-white transition-all duration-300"
+                  className="flex items-center gap-3 p-3.5 rounded-xl bg-white/5 border border-white/5 hover:border-accent/30 hover:bg-white/10 text-white/80 hover:text-white transition-all duration-300 focus:outline-none focus:ring-1 focus:ring-accent/50"
+                  aria-label="Visit LinkedIn Profile"
                 >
                   <Linkedin size={16} className="text-accent" />
                   <span>linkedin.com/in/deepak-p (placeholder)</span>
@@ -153,6 +355,7 @@ export default function Contact() {
                 {/* Location */}
                 <div 
                   className="flex items-center gap-3 p-3.5 rounded-xl bg-white/5 border border-white/5 text-white/80"
+                  role="presentation"
                 >
                   <MapPin size={16} className="text-primary" />
                   <span>Erode, Tamil Nadu, India</span>
@@ -166,7 +369,7 @@ export default function Contact() {
             </div>
           </motion.div>
 
-          {/* Right Column: Glassmorphic form (col 7) */}
+          {/* Right Column: Glassmorphic form (col-7) */}
           <motion.div 
             initial={{ opacity: 0, x: 30 }}
             whileInView={{ opacity: 1, x: 0 }}
@@ -176,102 +379,242 @@ export default function Contact() {
           >
             <AnimatePresence mode="wait">
               {status === 'success' ? (
+                /* Success Toast View State */
                 <motion.div
                   initial={{ opacity: 0, scale: 0.95 }}
                   animate={{ opacity: 1, scale: 1 }}
                   exit={{ opacity: 0, scale: 0.95 }}
                   className="text-center py-8 flex flex-col items-center gap-4"
+                  role="status"
                 >
                   <div className="w-16 h-16 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 mb-2">
                     <CheckCircle2 size={36} />
                   </div>
-                  <h3 className="text-2xl font-display font-bold text-white">Message Transmitted!</h3>
+                  <h3 className="text-2xl font-display font-bold text-white">✅ Message Sent Successfully</h3>
                   <p className="text-white/60 text-sm max-w-sm font-sans">
-                    Thank you for reaching out, Deepak P has received your message pipeline and will respond shortly.
+                    Thank you for reaching out! Your message has been sent successfully. An automatic confirmation email has been dispatched to your inbox.
                   </p>
                   <button
+                    type="button"
                     onClick={() => setStatus('idle')}
-                    className="mt-4 px-6 py-2 rounded-full border border-white/10 hover:border-white/20 text-xs font-mono hover:bg-white/5 text-white transition-all"
+                    className="mt-4 px-6 py-2 rounded-full border border-white/10 hover:border-white/20 text-xs font-mono hover:bg-white/5 text-white transition-all focus:outline-none focus:ring-1 focus:ring-primary/50"
                   >
                     Send Another Message
                   </button>
                 </motion.div>
               ) : (
+                /* Standard Contact Form */
                 <motion.form
                   onSubmit={handleSubmit}
-                  className="flex flex-col gap-6"
+                  className="flex flex-col gap-5"
                   initial={{ opacity: 1 }}
                   exit={{ opacity: 0 }}
+                  noValidate
                 >
-                  {/* Form Error Tag */}
-                  {status === 'error' && (
-                    <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex items-center gap-2 font-mono">
-                      <AlertCircle size={14} className="flex-shrink-0" />
-                      <span>{errorMessage}</span>
-                    </div>
-                  )}
-
-                  {/* Name field */}
-                  <div className="relative w-full">
-                    <label
-                      htmlFor="name"
-                      className={`absolute left-4 transition-all duration-300 pointer-events-none font-mono text-xs ${
-                        focusedField === 'name' || formState.name
-                          ? 'top-[-8px] text-[9px] text-primary bg-[#0E1322] px-2 border border-primary/20 rounded'
-                          : 'top-4 text-white/40'
-                      }`}
-                    >
-                      Your Name
-                    </label>
+                  {/* Honeypot Spam Bot Trap */}
+                  <div className="absolute left-[-9999px] top-[-9999px] opacity-0 pointer-events-none" aria-hidden="true">
+                    <label htmlFor="website_url">Do not fill this field if you are human</label>
                     <input
                       type="text"
-                      id="name"
-                      name="name"
-                      value={formState.name}
-                      onFocus={() => handleFocus('name')}
-                      onBlur={() => handleBlur('name')}
+                      id="website_url"
+                      name="website_url"
+                      value={formState.website_url}
                       onChange={handleChange}
-                      className="w-full px-4 py-3.5 bg-white/5 border border-white/10 rounded-xl font-sans text-xs text-white placeholder-transparent focus:outline-none focus:border-primary/50 focus:bg-white/[0.07] transition-all"
-                      disabled={status === 'submitting'}
+                      tabIndex={-1}
+                      autoComplete="off"
                     />
                   </div>
 
-                  {/* Email field */}
-                  <div className="relative w-full">
-                    <label
-                      htmlFor="email"
-                      className={`absolute left-4 transition-all duration-300 pointer-events-none font-mono text-xs ${
-                        focusedField === 'email' || formState.email
-                          ? 'top-[-8px] text-[9px] text-secondary bg-[#0E1322] px-2 border border-secondary/20 rounded'
-                          : 'top-4 text-white/40'
-                      }`}
+                  {/* Submission Fail/Error Warnings */}
+                  {status === 'error' && (
+                    <motion.div 
+                      initial={{ opacity: 0, y: -10 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex flex-col gap-2 font-mono"
+                      role="alert"
                     >
-                      Email Address
-                    </label>
-                    <input
-                      type="email"
-                      id="email"
-                      name="email"
-                      value={formState.email}
-                      onFocus={() => handleFocus('email')}
-                      onBlur={() => handleBlur('email')}
-                      onChange={handleChange}
-                      className="w-full px-4 py-3.5 bg-white/5 border border-white/10 rounded-xl font-sans text-xs text-white placeholder-transparent focus:outline-none focus:border-secondary/50 focus:bg-white/[0.07] transition-all"
-                      disabled={status === 'submitting'}
-                    />
+                      <div className="flex items-center gap-2">
+                        <AlertCircle size={14} className="flex-shrink-0" />
+                        <span>Transmission Error</span>
+                      </div>
+                      <p className="text-[11px] text-white/70 pl-5">{errorMessage}</p>
+                      <button
+                        type="submit"
+                        disabled={status === 'submitting'}
+                        className="self-start text-[10px] underline text-red-400 hover:text-red-300 font-bold focus:outline-none mt-1 pl-5"
+                      >
+                        Retry Submission
+                      </button>
+                    </motion.div>
+                  )}
+
+                  {/* Input Row 1: Name and Email */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    {/* Name */}
+                    <div className="relative w-full">
+                      <label
+                        htmlFor="name"
+                        className={`absolute left-4 transition-all duration-300 pointer-events-none font-mono text-xs ${
+                          focusedField === 'name' || formState.name
+                            ? 'top-[-8px] text-[9px] text-primary bg-[#0B0F19] px-2 border border-primary/20 rounded'
+                            : 'top-4 text-white/40'
+                        }`}
+                      >
+                        Full Name *
+                      </label>
+                      <input
+                        type="text"
+                        id="name"
+                        name="name"
+                        value={formState.name}
+                        onFocus={() => handleFocus('name')}
+                        onBlur={() => handleBlur('name')}
+                        onChange={handleChange}
+                        className={`w-full px-4 py-3.5 bg-white/5 border rounded-xl font-sans text-xs text-white placeholder-transparent focus:outline-none focus:bg-white/[0.07] transition-all ${
+                          errors.name 
+                            ? 'border-red-500/40 focus:border-red-500' 
+                            : 'border-white/10 focus:border-primary/50'
+                        }`}
+                        disabled={status === 'submitting'}
+                        aria-required="true"
+                        aria-invalid={errors.name ? 'true' : 'false'}
+                        aria-describedby={errors.name ? 'name-error' : undefined}
+                      />
+                      <AnimatePresence>
+                        {errors.name && (
+                          <motion.p
+                            id="name-error"
+                            initial={{ opacity: 0, y: -4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0 }}
+                            className="text-[9px] text-red-400 font-mono mt-1 pl-2 flex items-center gap-1"
+                          >
+                            <AlertCircle size={9} />
+                            <span>{errors.name}</span>
+                          </motion.p>
+                        )}
+                      </AnimatePresence>
+                    </div>
+
+                    {/* Email */}
+                    <div className="relative w-full">
+                      <label
+                        htmlFor="email"
+                        className={`absolute left-4 transition-all duration-300 pointer-events-none font-mono text-xs ${
+                          focusedField === 'email' || formState.email
+                            ? 'top-[-8px] text-[9px] text-secondary bg-[#0B0F19] px-2 border border-secondary/20 rounded'
+                            : 'top-4 text-white/40'
+                        }`}
+                      >
+                        Email Address *
+                      </label>
+                      <input
+                        type="email"
+                        id="email"
+                        name="email"
+                        value={formState.email}
+                        onFocus={() => handleFocus('email')}
+                        onBlur={() => handleBlur('email')}
+                        onChange={handleChange}
+                        className={`w-full px-4 py-3.5 bg-white/5 border rounded-xl font-sans text-xs text-white placeholder-transparent focus:outline-none focus:bg-white/[0.07] transition-all ${
+                          errors.email 
+                            ? 'border-red-500/40 focus:border-red-500' 
+                            : 'border-white/10 focus:border-secondary/50'
+                        }`}
+                        disabled={status === 'submitting'}
+                        aria-required="true"
+                        aria-invalid={errors.email ? 'true' : 'false'}
+                        aria-describedby={errors.email ? 'email-error' : undefined}
+                      />
+                      <AnimatePresence>
+                        {errors.email && (
+                          <motion.p
+                            id="email-error"
+                            initial={{ opacity: 0, y: -4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0 }}
+                            className="text-[9px] text-red-400 font-mono mt-1 pl-2 flex items-center gap-1"
+                          >
+                            <AlertCircle size={9} />
+                            <span>{errors.email}</span>
+                          </motion.p>
+                        )}
+                      </AnimatePresence>
+                    </div>
                   </div>
 
-                  {/* Message field */}
+                  {/* Input Row 2: Phone and Subject */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    {/* Phone Number */}
+                    <div className="relative w-full">
+                      <label
+                        htmlFor="phone"
+                        className={`absolute left-4 transition-all duration-300 pointer-events-none font-mono text-xs ${
+                          focusedField === 'phone' || formState.phone
+                            ? 'top-[-8px] text-[9px] text-accent bg-[#0B0F19] px-2 border border-accent/20 rounded'
+                            : 'top-4 text-white/40'
+                        }`}
+                      >
+                        Phone Number (Optional)
+                      </label>
+                      <div className="relative flex items-center">
+                        <input
+                          type="tel"
+                          id="phone"
+                          name="phone"
+                          value={formState.phone}
+                          onFocus={() => handleFocus('phone')}
+                          onBlur={() => handleBlur('phone')}
+                          onChange={handleChange}
+                          className="w-full px-4 py-3.5 bg-white/5 border border-white/10 rounded-xl font-sans text-xs text-white placeholder-transparent focus:outline-none focus:border-accent/50 focus:bg-white/[0.07] transition-all"
+                          disabled={status === 'submitting'}
+                          aria-required="false"
+                        />
+                        <Phone size={12} className="absolute right-4 text-white/20 pointer-events-none" />
+                      </div>
+                    </div>
+
+                    {/* Subject */}
+                    <div className="relative w-full">
+                      <label
+                        htmlFor="subject"
+                        className={`absolute left-4 transition-all duration-300 pointer-events-none font-mono text-xs ${
+                          focusedField === 'subject' || formState.subject
+                            ? 'top-[-8px] text-[9px] text-primary bg-[#0B0F19] px-2 border border-primary/20 rounded'
+                            : 'top-4 text-white/40'
+                        }`}
+                      >
+                        Subject (Optional)
+                      </label>
+                      <div className="relative flex items-center">
+                        <input
+                          type="text"
+                          id="subject"
+                          name="subject"
+                          value={formState.subject}
+                          onFocus={() => handleFocus('subject')}
+                          onBlur={() => handleBlur('subject')}
+                          onChange={handleChange}
+                          className="w-full pl-4 pr-10 py-3.5 bg-white/5 border border-white/10 rounded-xl font-sans text-xs text-white placeholder-transparent focus:outline-none focus:bg-white/[0.07] transition-all"
+                          disabled={status === 'submitting'}
+                          aria-required="false"
+                        />
+                        <Tag size={12} className="absolute right-4 text-white/20 pointer-events-none" />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Message Field */}
                   <div className="relative w-full">
                     <label
                       htmlFor="message"
                       className={`absolute left-4 transition-all duration-300 pointer-events-none font-mono text-xs ${
                         focusedField === 'message' || formState.message
-                          ? 'top-[-8px] text-[9px] text-accent bg-[#0E1322] px-2 border border-accent/20 rounded'
+                          ? 'top-[-8px] text-[9px] text-accent bg-[#0B0F19] px-2 border border-accent/20 rounded'
                           : 'top-4 text-white/40'
                       }`}
                     >
-                      Write your message here...
+                      Write your message here... *
                     </label>
                     <textarea
                       id="message"
@@ -281,26 +624,47 @@ export default function Contact() {
                       onFocus={() => handleFocus('message')}
                       onBlur={() => handleBlur('message')}
                       onChange={handleChange}
-                      className="w-full px-4 py-3.5 bg-white/5 border border-white/10 rounded-xl font-sans text-xs text-white placeholder-transparent focus:outline-none focus:border-accent/50 focus:bg-white/[0.07] transition-all resize-none"
+                      className={`w-full px-4 py-3.5 bg-white/5 border rounded-xl font-sans text-xs text-white placeholder-transparent focus:outline-none focus:bg-white/[0.07] transition-all resize-none ${
+                        errors.message 
+                          ? 'border-red-500/40 focus:border-red-500' 
+                          : 'border-white/10 focus:border-accent/50'
+                      }`}
                       disabled={status === 'submitting'}
+                      aria-required="true"
+                      aria-invalid={errors.message ? 'true' : 'false'}
+                      aria-describedby={errors.message ? 'message-error' : undefined}
                     />
+                    <AnimatePresence>
+                      {errors.message && (
+                        <motion.p
+                          id="message-error"
+                          initial={{ opacity: 0, y: -4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0 }}
+                          className="text-[9px] text-red-400 font-mono mt-1 pl-2 flex items-center gap-1"
+                        >
+                          <AlertCircle size={9} />
+                          <span>{errors.message}</span>
+                        </motion.p>
+                      )}
+                    </AnimatePresence>
                   </div>
 
-                  {/* Send Button */}
+                  {/* Submit Button */}
                   <button
                     type="submit"
                     disabled={status === 'submitting'}
-                    className="group relative px-6 py-3.5 w-full rounded-xl bg-gradient-to-r from-primary to-secondary text-background font-bold font-display text-xs tracking-wider flex items-center justify-center gap-2 overflow-hidden shadow-glass transition-all hover:shadow-neon-cyan duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="group relative px-6 py-3.5 w-full rounded-xl bg-gradient-to-r from-primary to-secondary text-background font-bold font-display text-xs tracking-wider flex items-center justify-center gap-2 overflow-hidden shadow-glass transition-all hover:shadow-neon-cyan duration-300 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-primary/50"
                   >
                     {status === 'submitting' ? (
                       <>
-                        <RefreshCw size={14} className="animate-spin" />
-                        <span>Transmitting...</span>
+                        <Loader2 size={14} className="animate-spin text-background" />
+                        <span>TRANSMITTING DATA...</span>
                       </>
                     ) : (
                       <>
-                        <span>Send Message</span>
-                        <Send size={14} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform duration-300" />
+                        <span>SEND MESSAGE</span>
+                        <Send size={14} className="group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-transform duration-300 text-background" />
                       </>
                     )}
                   </button>

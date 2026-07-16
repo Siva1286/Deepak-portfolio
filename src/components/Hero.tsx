@@ -199,8 +199,8 @@ export default function Hero() {
 
           {/* Download Resume */}
           <a
-            href="/resume.pdf"
-            download
+            href="/resume/Deepak_P_Resume.pdf"
+            download="Deepak_P_Resume.pdf"
             className="group px-8 py-3.5 w-full sm:w-auto rounded-full bg-white/5 hover:bg-white/10 text-white border border-white/10 hover:border-white/20 font-bold font-display text-sm tracking-wider flex items-center justify-center gap-2 transition-all duration-300 transform hover:-translate-y-0.5"
           >
             <span>Download Resume</span>
